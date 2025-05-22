@@ -1,0 +1,15 @@
+artifact_uri: mlflow-artifacts:/326816491606654379/364b73ad55c94cd8972409800acb382c/artifacts
+end_time: 1747910377137
+entry_point_name: ''
+experiment_id: '326816491606654379'
+lifecycle_stage: active
+run_id: 364b73ad55c94cd8972409800acb382c
+run_name: worried-eel-208
+run_uuid: 364b73ad55c94cd8972409800acb382c
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1747910284484
+status: 3
+tags: []
+user_id: Admin

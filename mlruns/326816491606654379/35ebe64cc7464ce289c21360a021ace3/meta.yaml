@@ -1,0 +1,15 @@
+artifact_uri: mlflow-artifacts:/326816491606654379/35ebe64cc7464ce289c21360a021ace3/artifacts
+end_time: 1747919073926
+entry_point_name: ''
+experiment_id: '326816491606654379'
+lifecycle_stage: active
+run_id: 35ebe64cc7464ce289c21360a021ace3
+run_name: bustling-lamb-456
+run_uuid: 35ebe64cc7464ce289c21360a021ace3
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1747911130192
+status: 3
+tags: []
+user_id: Admin

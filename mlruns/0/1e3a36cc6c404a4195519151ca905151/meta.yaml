@@ -1,0 +1,15 @@
+artifact_uri: mlflow-artifacts:/0/1e3a36cc6c404a4195519151ca905151/artifacts
+end_time: 1747907133569
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 1e3a36cc6c404a4195519151ca905151
+run_name: popular-cub-199
+run_uuid: 1e3a36cc6c404a4195519151ca905151
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1747907059451
+status: 3
+tags: []
+user_id: Admin
