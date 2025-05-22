@@ -1,0 +1,44 @@
+# Fichiers générés par MLflow
+mlruns/
+mlartifacts/
+.mlflow/
+
+# Fichiers de configuration et environnements
+.env
+.env.local
+.env.development
+.env.production
+
+# Fichiers Python générés
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environnements virtuels Python
+venv/
+ENV/
+env/
+
+# Fichiers de l'éditeur/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+
+# Fichiers de données locales (si vous en avez)
+*.db
+*.sqlite
+*.csv
+*.parquet
+
+# Fichiers de cache
+.cache/
+
+# Fichiers de build/distribution
+build/
+dist/
+*.egg-info/
