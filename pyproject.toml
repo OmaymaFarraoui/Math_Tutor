@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "math-tutor"
+version = "0.1.0"
+description = "projet tutorat mathematique"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "3.11.4"
+crewai = "^0.121.0"
+langchain-groq = "^0.3.2"
+pydantic = "^2.11.5"
+python-dotenv = "^1.1.0"
+rich = ">=13.7.0,<14.0.0"  # Version compatible avec crewai
+mlflow = "^2.22.0"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.5"
+pytest-cov = "^6.1.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+markers = [
+    "performance: mark tests as performance tests",
+    "integration: integration tests",
+    "unit: unit tests",
+    "ui: user interface tests"
+]
+
+[tool.coverage.run]
+source = ["math_tutor"]
+omit = ["*/tests/*"]
+
+
