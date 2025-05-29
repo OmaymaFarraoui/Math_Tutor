@@ -9,3 +9,10 @@ evidently>=0.4.0  # Pour le monitoring
 python-dateutil>=2.8.0  # Pour la gestion des dates
 pathlib>=1.0.0  # Pour la gestion des chemins (normalement inclus en standard)
 typing-extensions>=4.0.0  # Pour les annotations de type (Python <3.10)
+pytesseract >= 0.3.10
+pdf2image >= 1.16.3
+pillow >= 10.0.0
+pymupdf >= 1.23.0
+chromadb >= 0.4.15
+sentence-transformers >= 2.2.2
+PyMuPDF

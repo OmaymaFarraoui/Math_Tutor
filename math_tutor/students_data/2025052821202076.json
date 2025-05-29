@@ -1,0 +1,18 @@
+{
+    "student_id": "2025052821202076",
+    "name": "jihane",
+    "level": 2,
+    "current_objective": "Domaine de d\u00e9finition",
+    "learning_history": [
+        {
+            "exercise": "D\u00e9terminez le domaine de d\u00e9finition de la fonction f(x) = x^2 - 3x + 1",
+            "answer": "D:/M2 OF/STAGE PFE/screen/test.png",
+            "evaluation": true,
+            "timestamp": "2025-05-28T21:36:31.423844",
+            "attempt": 1
+        }
+    ],
+    "objectives_completed": [],
+    "created_at": "2025-05-28T21:20:20.763287",
+    "last_session": "2025-05-28T21:20:20.763287"
+}
