@@ -2,6 +2,7 @@
 mlruns/
 mlartifacts/
 .mlflow/
+mlflow.db
 
 # Fichiers de configuration et environnements
 .env
@@ -15,7 +16,7 @@ __pycache__/
 *$py.class
 
 # Environnements virtuels Python
-venv/
+myvenv/
 ENV/
 env/
 
@@ -31,7 +32,7 @@ Thumbs.db
 
 # Fichiers de données locales (si vous en avez)
 *.db
-*.sqlite
+*.sqlite3
 *.csv
 *.parquet
 
