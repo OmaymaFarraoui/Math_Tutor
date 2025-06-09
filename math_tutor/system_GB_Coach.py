@@ -2,7 +2,7 @@ import os
 import json
 import re
 from tkinter import Tk, filedialog
-from datetime import datetime # type: ignore
+from datetime import datetime, time # type: ignore
 from pathlib import Path # type: ignore
 from typing import Optional, Dict, List, Union
 import chromadb
@@ -11,10 +11,10 @@ from crewai import Agent, Task, Crew, Process
 from langchain_groq import ChatGroq
 import pandas as pd
 from pydantic import BaseModel, Field
-from rich.console import Console
-from rich.panel import Panel
-from rich.prompt import Prompt
 import mlflow
+import streamlit as st
+import sympy as sp
+import matplotlib.pyplot as plt
 from math_tutor.utils.file_processor import FileProcessor
 from math_tutor.utils.long_term_memory import LongTermMemory
 
@@ -24,7 +24,6 @@ def setup_mlflow():
 
 # Initialisation
 load_dotenv()
-console = Console()
 
 class StudentProfile(BaseModel):
     student_id: str
@@ -70,7 +69,7 @@ class LearningObjectives:
                 self.objectives = json.load(f)
                 self.objectives_order = list(self.objectives.keys())
         except Exception as e:
-            console.print(f"[red]Erreur de chargement des objectifs: {str(e)}[/red]")
+            st.error(f"Erreur de chargement des objectifs: {str(e)}")
             self.objectives = {}
             self.objectives_order = []
 
@@ -79,9 +78,40 @@ class StudentManager:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(exist_ok=True)
         self.client = chromadb.PersistentClient(path=str(self.data_dir / "memory_db"))
-        
-        self.memory_enabled = enable_memory
-        self.long_term_memory = self._safe_init_memory()
+
+        self.long_term_memory = self._initialize_memory(enable_memory)
+
+
+    
+    def _initialize_memory(self, enable_memory):
+        import shutil
+        db_path = Path("students_data/memory_db")
+        if db_path.exists():
+            try:
+                shutil.rmtree(db_path)
+            except Exception as e:
+                print(f"⚠️ Nettoyage base échoué: {str(e)}")
+        if not enable_memory:
+            return None
+            
+        try:
+            # Réinitialise la base si corrompue
+            if hasattr(self, 'client'):
+                try:
+                    self.client.reset()
+                except:
+                    pass
+                    
+            from math_tutor.utils.long_term_memory import LongTermMemory
+            memory = LongTermMemory("global_memory", client=self.client)
+            
+            if not memory.test_connection():
+                raise ConnectionError("Échec test connexion mémoire")
+                
+            return memory
+        except Exception as e:
+            print(f"⚠️ Initialisation mémoire échouée : {str(e)}")
+            return None
 
     def create_student(self, name=None):
         student_id = datetime.now().strftime("%Y%m%d%H%M%S%f")[:16]
@@ -101,7 +131,7 @@ class StudentManager:
             with open(student_file, 'r', encoding='utf-8') as f:
                 return StudentProfile(**json.load(f))
         except Exception as e:
-            console.print(f"[red]Erreur de chargement: {str(e)}[/red]")
+            st.error(f"Erreur de chargement: {str(e)}")
             return None
 
     def save_student(self, student):
@@ -114,60 +144,89 @@ class StudentManager:
             # Sauvegarde dans ChromaDB
             self._sync_to_long_term_memory(student)
         except Exception as e:
-            console.print(f"[red]Erreur de sauvegarde: {str(e)}[/red]")
-    def _safe_init_memory(self):
-        """Initialisation avec fallback silencieux"""
-        if not self.memory_enabled:
-            return None
+            st.error(f"Erreur de sauvegarde: {str(e)}")
+    # def _safe_init_memory(self):
+    #     """Initialisation avec fallback silencieux"""
+    #     if not self.memory_enabled:
+    #         return None
             
-        try:
-            from math_tutor.utils.long_term_memory import LongTermMemory
-            memory = LongTermMemory("global_memory")
-            memory.client.heartbeat()  # Test de connexion
-            return memory
-        except Exception as e:
-            console.print(f"[yellow]⚠️ Mode dégradé: {str(e)}[/yellow]")
-            return None
+    #     try:
+    #         # from math_tutor.utils.long_term_memory import LongTermMemory
+    #         memory = LongTermMemory("global_memory")
+    #         memory.client.heartbeat()  # Test de connexion
+    #         return memory
+    #     except Exception as e:
+    #         st.warning(f"⚠️ Mode dégradé: {str(e)}")
+    #         return None
 
 
     def _sync_to_long_term_memory(self, student: StudentProfile) -> None:
-        try:
-            if not hasattr(self, 'long_term_memory') or not self.long_term_memory:
-                console.print("[yellow]⚠️ Mémoire long terme non initialisée[/yellow]")
-                return
+        """Version ultra-robuste avec réessai automatique"""
+        if not self.long_term_memory:
+            if not hasattr(self, '_warned_memory'):
+                print("ℹ️ Mémoire désactivée - mode dégradé activé")
+                self._warned_memory = True
+            return
 
-            # 1. Synchronisation avec ID explicite
-            self.long_term_memory.add_memory(
-                content=f"Niveau atteint: {student.level}",
-                metadata={
-                    "type": "level_update",
-                    "new_level": str(student.level),
-                    "timestamp": datetime.now().isoformat()
-                },
-                id=f"level_{student.level}"  # Maintenant accepté
-            )
+        metadata = {
+            "type": "level_update",
+            "student_id": student.student_id,
+            "new_level": str(student.level),
+            "timestamp": datetime.now().isoformat()
+        }
 
-        except Exception as e:
-            console.print(f"[red]❌ Erreur synchronisation mémoire: {str(e)}[/red]")
+        for attempt in range(3):  # 3 tentatives
             try:
-                # Sauvegarde de secours corrigée
-                backup_file = self.data_dir / f"{student.student_id}_backup.json"
-                with open(backup_file, 'w') as f:
-                    json.dump(student.model_dump(), f)
-            except Exception as backup_error:
-                console.print(f"[red]❌ Erreur sauvegarde secours: {str(backup_error)}[/red]")
+                self.long_term_memory.upsert_memory(
+                    content=f"Niveau {student.level} atteint par {student.name or 'anonyme'}",
+                    metadata=metadata,
+                    id=f"student_{student.student_id}_level_{student.level}"
+                )
+                return  # Succès, on sort
+            except Exception as e:
+                if attempt == 2:  # Dernière tentative
+                    self._handle_sync_error(e, student)
+                else:
+                    print(f"⚠️ Tentative {attempt + 1} échouée, nouvelle tentative...")
+                    time.sleep(1)  # Pause avant réessai
+
+    def _handle_sync_error(self, error: Exception, student: StudentProfile):
+        """Gestion centralisée des erreurs avec journalisation"""
+        error_msg = f"❌ Erreur synchronisation mémoire: {str(error)}"
+        print(error_msg)  # Log dans la console
+        if 'st' in globals():  # Si Streamlit est disponible
+            st.error(error_msg)
+        
+        # Sauvegarde d'urgence avec journalisation
+        backup_dir = self.data_dir / "backups"
+        try:
+            backup_dir.mkdir(exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_file = backup_dir / f"{timestamp}_{student.student_id}.json"
+            
+            with open(backup_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "student": student.model_dump(),
+                    "error": str(error),
+                    "timestamp": datetime.now().isoformat(),
+                    "attempt": "memory_sync"
+                }, f, indent=4)
+                
+            print(f"✅ Sauvegarde secours créée: {backup_file}")
+        except Exception as backup_error:
+            print(f"❌ Échec sauvegarde secours: {str(backup_error)}")
 class MathTutoringSystem:
     def __init__(self):
         self.llm = None
         try:
             self.llm = ChatGroq(
                 api_key=os.getenv('GROQ_API_KEY'),
-                model="groq/llama-3.3-70b-versatile",  
+                model="llama-3.3-70b-versatile",  
                 temperature=0.7
             )
             self.setup_mlflow()
         except Exception as e:
-            console.print(f"[yellow]Mode hors ligne activé: {str(e)}[/yellow]")
+            st.error(f"Mode hors ligne activé: {str(e)}")
             self.llm = None 
         
         self.file_processor = FileProcessor()
@@ -232,7 +291,7 @@ class MathTutoringSystem:
                     "personal_coach": self.personal_coach.model_dump()
                 }, "agents_config.json")
             except Exception as e:
-                console.print(f"[yellow]Erreur lors du logging des agents: {str(e)}[/yellow]")
+                st.error(f"Erreur lors du logging des agents: {str(e)}")
 
     def load_model_from_registry(model_name: str, stage: str = "Production"):
         return mlflow.pyfunc.load_model(f"models:/{model_name}/{stage}")
@@ -240,48 +299,33 @@ class MathTutoringSystem:
     
     
     def authenticate_student(self):
-        console.print(Panel.fit("🔐 Système de Tutorat Mathématique", style="bold blue"))
-        
-        choice = Prompt.ask(
-            "1. Créer un profil\n2. Charger un profil",
-            choices=["1", "2"],
-            default="1"
-        )
-        
-        success = False
-        
-        if choice == "1":
-            name = Prompt.ask("Prénom (optionnel)")
-            self.current_student = self.student_manager.create_student(name)
-            console.print(f"[green]✅ Profil créé (ID: {self.current_student.student_id})[/green]")
-            
-            if self.learning_objectives.objectives_order:
-                self.current_student.current_objective = self.learning_objectives.objectives_order[0]
-                self.student_manager.save_student(self.current_student)
-            success = True
-        else:
-            student_id = Prompt.ask("ID étudiant")
-            self.current_student = self.student_manager.load_student(student_id)
-            if not self.current_student:
-                console.print("[red]❌ Profil non trouvé[/red]")
-                success = False
-            else:
-                console.print(f"[green]✅ Bienvenue, {self.current_student.name or 'étudiant'}![/green]")
-                success = True
-        
-        # Initialiser la mémoire long terme si authentification réussie
-        if success and self.current_student:
-            try:
-                self.long_term_memory = LongTermMemory(self.current_student.student_id)
-                self._load_initial_memories()
-            except Exception as e:
-                console.print(f"[yellow]⚠️ Impossible d'initialiser la mémoire long terme: {str(e)}[/yellow]")
-                # Continuer sans mémoire long terme
-                self.long_term_memory = None
-        
-        return success
-    
+        """Version adaptée pour Streamlit"""
+        if not hasattr(st.session_state, 'authenticated'):
+            st.session_state.authenticated = False
 
+        if st.session_state.authenticated:
+            return True
+
+        with st.form("auth_form"):
+            choice = st.radio("Options", ["Créer un profil", "Charger un profil"])
+            name = st.text_input("Prénom (optionnel)")
+            student_id = st.text_input("ID étudiant") if choice == "Charger un profil" else None
+            
+            if st.form_submit_button("Valider"):
+                if choice == "Créer un profil":
+                    self.current_student = self.student_manager.create_student(name)
+                    st.success(f"Profil créé (ID: {self.current_student.student_id})")
+                    st.session_state.authenticated = True
+                else:
+                    self.current_student = self.student_manager.load_student(student_id)
+                    if self.current_student:
+                        st.success(f"Bienvenue, {self.current_student.name or 'étudiant'}!")
+                        st.session_state.authenticated = True
+                    else:
+                        st.error("Profil non trouvé")
+        
+        return st.session_state.authenticated
+    
     def _load_initial_memories(self):
         """Charge les mémoires initiales depuis le profil étudiant"""
         if not self.current_student:
@@ -319,25 +363,54 @@ class MathTutoringSystem:
                 "max_iter": 15
             })
         except Exception as e:
-            console.print(f"[yellow]Avertissement MLflow: {str(e)}[/yellow]")
+            st.error(f"Avertissement MLflow: {str(e)}")
             self.mlflow_run = None
+
+
+    def get_current_objective_info(self):
+        """Retourne les infos de l'objectif actuel pour Streamlit"""
+        if not self.current_student:
+            return None
+        
+        objective = self.learning_objectives.objectives.get(self.current_student.current_objective or "", {})
+        if not objective:
+            return None
+        
+        level_info = objective["niveaux"].get(str(self.current_student.level), {})
+        return {
+            "description": objective.get("description", ""),
+            "level_name": level_info.get("name", ""),
+            "total_levels": len(objective["niveaux"]),
+            "objectives": level_info.get("objectives", [])
+        }
+
+    def get_student_progress(self):
+        """Retourne les statistiques de progression pour Streamlit"""
+        if not self.current_student:
+            return None
+        
+        return {
+            "level": self.current_student.level,
+            "completed": len(self.current_student.objectives_completed),
+            "history": pd.DataFrame(self.current_student.learning_history)
+        }
 
     def _generate_exercise(self) -> Optional[Exercise]:
         """Génère un exercice adapté à l'objectif actuel avec meilleure gestion des erreurs"""
         with mlflow.start_span("exercise_generation"):
             # Vérification de l'étudiant et de l'objectif
             if not self.current_student or not self.current_student.current_objective:
-                console.print("[red]Aucun étudiant ou objectif défini[/red]")
+                st.error("Aucun étudiant ou objectif défini")
                 return None
 
             objective = self.learning_objectives.objectives.get(self.current_student.current_objective)
             if not objective:
-                console.print(f"[red]Objectif non trouvé: {self.current_student.current_objective}[/red]")
+                st.error(f"Objectif non trouvé: {self.current_student.current_objective}")
                 return None
 
             level_info = objective["niveaux"].get(str(self.current_student.level))
             if not level_info:
-                console.print(f"[red]Niveau non trouvé: {self.current_student.level}[/red]")
+                st.error(f"Niveau non trouvé: {self.current_student.level}")
                 return None
 
             # Fallback de base
@@ -383,10 +456,10 @@ class MathTutoringSystem:
                 )
 
                 result = crew.kickoff()
-                print("\nEXercice:", result['exercise'])
-                print("\nconcept:", result['concept'] )
-                print("\ndifficulty:", result['difficulty'])
-                print("\nhints:", "\n".join(result['hints']) )
+                # st.code("\nEXercice:", result['exercise'])
+                # st.code("\nconcept:", result['concept'] )
+                # st.code("\ndifficulty:", result['difficulty'])
+                # st.code("\nhints:", "\n".join(result['hints']) )
                 
                 # Debug
                 #console.print(f"[yellow]Résultat brut: {result}[/yellow]")
@@ -395,24 +468,24 @@ class MathTutoringSystem:
                         # Récupérer le niveau actuel comme métrique numérique
                         mlflow.log_metrics({
                             "student_level": self.current_student.level,
-                            "hints_count": len(result['hints'])
+                            "hints_count": len(result.hints)
                         })
                         
                         # Enregistrer les détails de la difficulté comme paramètre
                         mlflow.log_params({
-                            "difficulty_name": result['difficulty'],
-                            "concept": result['concept']
+                            "difficulty_name": result.difficulty,
+                            "concept": result.concept
                         })
                         
                         mlflow.log_dict(result.model_dump(), "exercise_details.json")
                     except Exception as e:
-                        console.print(f"[yellow]Erreur MLflow: {str(e)}[/yellow]")
+                        st.error(f"Erreur MLflow: {str(e)}")
 
 
                 return result
 
             except Exception as e:
-                console.print(f"[red]Erreur génération exercice: {str(e)}[/red]")
+                st.error(f"Erreur génération exercice: {str(e)}")
                 return default_exercise
             
     def _evaluate_response(self, exercise: Exercise, answer: Union[str, Path]) -> EvaluationResult:
@@ -423,14 +496,14 @@ class MathTutoringSystem:
                 try:
                     extracted_text = self.file_processor.extract_text_from_file(str(answer))
                     if not extracted_text:
-                        console.print("[yellow]Aucun texte extrait du fichier[/yellow]")
+                        st.error("Aucun texte extrait du fichier")
                         return self._create_fallback_evaluation(exercise)
                     
                     # Utilisation directe avec Pydantic
                     return self._evaluate_prompt(exercise, extracted_text)
                     
                 except Exception as e:
-                    console.print(f"[red]Erreur traitement fichier: {str(e)}[/red]")
+                    st.error(f"Erreur traitement fichier: {str(e)}")
                     return self._create_fallback_evaluation(exercise)
             
             # Cas texte
@@ -441,8 +514,8 @@ class MathTutoringSystem:
         prompt = f"""
         CONTEXTE D'ÉVALUATION
         ---------------------
-        Exercice proposé : {exercise['exercise']}
-        Solution de référence : {exercise['solution']}
+        Exercice proposé : {exercise.exercise}
+        Solution de référence : {exercise.solution}
         Réponse de l'étudiant : {answer}
 
         CRITÈRES D'ANALYSE DÉTAILLÉS
@@ -490,8 +563,8 @@ class MathTutoringSystem:
             is_correct=False,
             error_type="system_error",
             feedback="Erreur lors de l'évaluation",
-            detailed_explanation=f"Explication: {exercise['concept']}",
-            step_by_step_correction=exercise['solution'],
+            detailed_explanation=f"Explication: {exercise.concept}",
+            step_by_step_correction=exercise.solution,
             recommendations=[
                 "Vérifiez votre réponse manuellement",
                 "Consultez la solution fournie",
@@ -535,7 +608,7 @@ class MathTutoringSystem:
             return result
 
         except Exception as e:
-            console.print(f"[red]Erreur coaching: {str(e)}[/red]")
+            st.error(f"Erreur coaching: {str(e)}")
             return fallback_coaching
 
     def _build_coaching_prompt(self, exercise: Exercise, evaluation: EvaluationResult) -> str:
@@ -547,9 +620,9 @@ class MathTutoringSystem:
         - Ne rien ajouter d'autre (pas de texte, markdown, etc.)
 
         [CONTEXTE]
-        Exercice: {exercise['exercise']}
-        Réussite: {'Correct' if evaluation['is_correct'] else 'Incorrect'}
-        Erreur: {evaluation['error_type'] or 'Aucune'}
+        Exercice: {exercise.exercise}
+        Réussite: {'Correct' if evaluation.is_correct else 'Incorrect'}
+        Erreur: {evaluation.error_type or 'Aucune'}
 
         [FORMAT DE SORTIE]
         {CoachPersonal}
@@ -559,8 +632,8 @@ class MathTutoringSystem:
         """Journalisation des données de coaching"""
         try:
             mlflow.log_metrics({
-                "coaching_strategy_len": len(coaching['strategy']),
-                "encouragement_count": len(coaching['encouragement'])
+                "coaching_strategy_len": len(coaching.strategy),
+                "encouragement_count": len(coaching.encouragement)
             })
             
             mlflow.log_dict({
@@ -569,137 +642,48 @@ class MathTutoringSystem:
                 "coaching": coaching.model_dump()
             }, "coaching_session.json")
         except Exception as e:
-            console.print(f"[yellow]⚠️ Erreur journalisation: {str(e)}[/yellow]")
+            st.warning("⚠️ Erreur journalisation: {str(e)}")
 
     
-            
-    def _display_progress_report(self):
-        """Affiche un rapport de progression détaillé"""
-        if not self.current_student:
-            return
-
-        console.print(Panel.fit("📊 Rapport de Progression", style="bold blue"))
-        
-        # Objectif actuel
-        objective = self.learning_objectives.objectives.get(self.current_student.current_objective or "", {})
-        console.print(f"🎯 Objectif actuel: {objective.get('description', 'Aucun')}")
-        console.print(f"📈 Niveau actuel: {self.current_student.level}")
-        
-        # Objectifs complétés
-        if self.current_student.objectives_completed:
-            console.print("\n✅ Objectifs complétés:")
-            for obj in self.current_student.objectives_completed:
-                console.print(f"- {obj}")
-        else:
-            console.print("\n📌 Aucun objectif complété pour le moment")
-
-        # Statistiques
-        total_attempts = len(self.current_student.learning_history)
-        correct_answers = sum(1 for x in self.current_student.learning_history if x.get('is_correct', False))
-        console.print(f"\n📝 Tentatives: {total_attempts} | ✅ Correctes: {correct_answers}")
-        correct_answers = sum(1 for x in self.current_student.learning_history if x.get('is_correct', False))
-        accuracy = correct_answers / len(self.current_student.learning_history) if self.current_student.learning_history else 0
-        
-        mlflow.log_metrics({
-            "student_level": self.current_student.level,
-            "completion_rate": len(self.current_student.objectives_completed),
-            "accuracy_rate": accuracy
-        })
-
-    def _display_evaluation(self, evaluation: EvaluationResult, exercise: Exercise ):
-        """Affichage complet et structuré de l'évaluation"""
-        console.print("\n" + "="*60)
-        console.print(Panel.fit("📋 RÉSULTAT DE L'ÉVALUATION", style="bold blue"))
-
-        # Section Résultat Principal
-        if evaluation['is_correct']:
-            console.print(Panel.fit(
-                "✅ [bold green]RÉPONSE CORRECTE[/bold green]",
-                style="green"
-            ))
-        else:
-            error_display = evaluation['error_type']
-            console.print(Panel.fit(
-                f"❌ [bold red]RÉPONSE INCORRECTE[/bold red] ([yellow]{error_display}[/yellow])",
-                style="red"
-            ))
-
-        # Section Feedback
-        if evaluation['feedback']:
-            console.print(Panel.fit(
-                f"[bold]📝 Feedback:[/bold]\n{evaluation['feedback']}",
-                border_style="blue"
-            ))
-
-        # Section Explication
-        if evaluation["detailed_explanation"]:
-            console.print(Panel.fit(
-                f"[bold]🔍 Explication Détaillée:[/bold]\n{evaluation['detailed_explanation']}",
-                border_style="blue"
-            ))
-
-        # Section Correction
-        if evaluation['step_by_step_correction']:
-            console.print(Panel.fit(
-                f"[bold]✏️ Correction Étape par Étape:[/bold]\n{evaluation['step_by_step_correction']}",
-                border_style="green"
-            ))
-
-        # Section Recommandations
-        if evaluation['recommendations']:
-            recs = "\n".join(f"• {rec}" for rec in evaluation['recommendations'])
-            console.print(Panel.fit(
-                f"[bold]💡 Recommandations:[/bold]\n{recs}",
-                border_style="yellow"
-            ))
-        coaching = self._provide_personalized_coaching(evaluation, exercise)
-        #tips = "\n".join(f"• {tip}" for tip in coaching['tip'])
-        console.print(Panel.fit(
-            f"[bold]🧠 Coaching Personnalisé:[/bold]\n"
-            f"💪 [bold]Motivation:[/bold] {coaching['motivation']}\n"
-            f"📚 [bold]Stratégie:[/bold] {coaching['strategy']}\n"
-            f"💡 [bold]Astuce:[/bold]{coaching['tip']}\n"
-            f"✨ [bold]Encouragement:[/bold] {coaching['encouragement']}",
-            border_style="magenta"
-        ))
-
-        console.print("="*60 + "\n")
-
-    
-
-
     def start_learning_session(self):
         if not self.authenticate_student():
             return
 
-        console.print(Panel.fit(
+        if 'current_exercise' not in st.session_state:
+            st.session_state.current_exercise = None
+            st.session_state.attempts = 0
+
+        # Afficher les infos étudiant
+        st.header(f"Bienvenue, {self.current_student.name or 'Étudiant'}!")
+
+        st.header(
             f"Bienvenue, {self.current_student.name or 'étudiant'}!",
-            style="bold green"
-        ))
+            divider="bold green"
+        )
 
         while True:  # Boucle principale de session
             # Afficher les infos du niveau
             objective = self.learning_objectives.objectives.get(self.current_student.current_objective or "")
             if not objective:
-                console.print("[red]❌ Objectif non trouvé[/red]")
+                st.error("❌ Objectif non trouvé")
                 break
                 
             level_info = objective["niveaux"].get(str(self.current_student.level))
             if not level_info:
-                console.print("[red]❌ Niveau non trouvé[/red]")
+                st.error("❌ Niveau non trouvé")
                 break
 
-            console.print(Panel.fit(
+            st.header(
                 f"🎯 {objective['description']}\n"
                 f"📊 Niveau {self.current_student.level}: {level_info['name']}\n"
                 f"📝 Objectifs: {' | '.join(level_info['objectives'])}",
-                style="blue"
-            ))
+                divider="blue"
+            )
 
             # Générer le premier exercice
             exercise = self._generate_exercise()
             if not exercise:
-                console.print("[red]❌ Impossible de générer un exercice[/red]")
+                st.error("❌ Impossible de générer un exercice")
                 break
 
             while True:  # Boucle pour gérer un exercice (original ou similaire)
@@ -710,32 +694,32 @@ class MathTutoringSystem:
                 exercise_completed = False
 
                 while attempts < max_attempts:  # Boucle des tentatives
-                    console.print(Panel.fit(
-                        f"📝 Exercice (tentative {attempts + 1}/{max_attempts}):\n{exercise['exercise']}",
-                        style="green"
-                    ))
-                    input_mode = Prompt.ask("✏️ Comment souhaitez-vous répondre ?", choices=["texte", "fichier", "hint", "quit"])
+                    st.header(
+                        f"📝 Exercice (tentative {attempts + 1}/{max_attempts}):\n{exercise.exercise}",
+                        divider="green"
+                    )
+                    input_mode = st.text_input("✏️ Comment souhaitez-vous répondre ?", choices=["texte", "fichier", "hint", "quit"])
 
                     if input_mode.lower() == "quit":
                         return
                     elif input_mode.lower() == "hint":
-                        hints = "\n".join(f"• {hint}" for hint in exercise['hints'])
-                        console.print(f"\n💡[bold]Indice:[/bold]\n{hints}")
-                        input_mode = Prompt.ask("✏️ Après l'indice, souhaitez-vous répondre par 'texte' ou 'fichier'?", choices=["texte", "fichier"])
+                        hints = "\n".join(f"• {hint}" for hint in exercise.hints)
+                        st.info(f"\n💡[bold]Indice:[/bold]\n{hints}")
+                        input_mode = st.text_input("✏️ Après l'indice, souhaitez-vous répondre par 'texte' ou 'fichier'?", choices=["texte", "fichier"])
                         attempts = max(0, attempts - 1) if attempts > 0 else 0
 
                     if input_mode == "texte":
-                        answer = Prompt.ask("✏️ Entrez votre réponse")
+                        answer = st.text_input("✏️ Entrez votre réponse")
                     elif input_mode == "fichier":
                         file_path = self.choisir_fichier()
                         if file_path and Path(file_path).exists():
                             answer = file_path
                         else:
-                            console.print("[red]❌ Fichier non valide ou non sélectionné[/red]")
+                            st.error("❌ Fichier non valide ou non sélectionné")
                             continue
         
                     else:
-                        console.print("[red]❌ Mode de réponse inconnu[/red]")
+                        st.error("❌ Mode de réponse inconnu")
                         continue
 
 
@@ -745,19 +729,19 @@ class MathTutoringSystem:
                         last_evaluation = evaluation
                         
                         self.current_student.learning_history.append({
-                            "exercise": exercise['exercise'],
+                            "exercise": exercise.exercise,
                             "answer": answer,
-                            "evaluation": evaluation['is_correct'],
+                            "evaluation": evaluation.is_correct,
                             "timestamp": datetime.now().isoformat(),
                             "attempt": attempts + 1
                         })
 
-                        if evaluation['is_correct']:
+                        if evaluation.is_correct:
                             exercise_completed = True
                             break
 
                     except Exception as e:
-                        console.print(f"[red]Erreur critique: {str(e)}[/red]")
+                        st.error(f"Erreur critique: {str(e)}")
                         evaluation = self._create_fallback_evaluation(exercise)
                         self._display_evaluation(evaluation,exercise)
                         last_evaluation = evaluation
@@ -780,7 +764,7 @@ class MathTutoringSystem:
                     self.student_manager.save_student(self.current_student)
                     break  # Sort de la boucle d'exercice pour passer au suivant
                 else:
-                    choice = Prompt.ask(
+                    choice  = st.text_input(
                         "\nVoulez-vous un exercice similaire pour vous entraîner?",
                         choices=["oui", "non"],
                         default="oui"
@@ -792,34 +776,26 @@ class MathTutoringSystem:
                         break  # Sort de la boucle d'exercice
 
             # Demander si continuer avec nouvel objectif
-            if not Prompt.ask("\nContinuer avec un nouvel exercice?", choices=["oui", "non"], default="oui"):
+            if not st.text_input("\nContinuer avec un nouvel exercice?", choices=["oui", "non"], default="oui"):
                 break
 
         # Rapport final
         self._display_progress_report()
-        console.print("\n[green]🎉 Session terminée![/green]")
+        st.success("\n🎉 Session terminée!")
     
 
     def choisir_fichier(self):
-        """Ouvre une boîte de dialogue pour sélectionner un fichier"""
-        try:
-            from tkinter import Tk, filedialog
-            root = Tk()
-            root.withdraw()
-            root.attributes('-topmost', True)
-            file_path = filedialog.askopenfilename(
-                title="Choisissez un fichier",
-                filetypes=[
-                    ("Images", "*.png *.jpg *.jpeg"),
-                    ("PDF", "*.pdf"),
-                    ("Tous les fichiers", "*.*")
-                ]
-            )
-            root.destroy()
+        """Version Streamlit"""
+        uploaded_file = st.file_uploader("Téléverser un fichier", 
+                                    type=["png", "jpg", "jpeg", "pdf"])
+        if uploaded_file:
+            # Sauvegarde temporaire du fichier
+            file_path = os.path.join("temp_uploads", uploaded_file.name)
+            os.makedirs("temp_uploads", exist_ok=True)
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
             return file_path
-        except Exception as e:
-            console.print(f"[red]Erreur sélection fichier: {str(e)}[/red]")
-            return None
+        return None
 
 
 
@@ -828,13 +804,13 @@ class MathTutoringSystem:
         """Génère un exercice similaire au précédent (même concept et difficulté)"""
         if not self.llm:
             # Fallback simple - ajoute une variation à l'exercice original
-            modified_exercise = original_exercise['exercise'].replace("=", "+ 1 =") if "=" in original_exercise['exercise'] else original_exercise['exercise'] + " (variation)"
+            modified_exercise = original_exercise.exercise.replace("=", "+ 1 =") if "=" in original_exercise.exercise else original_exercise.exercise + " (variation)"
             return Exercise(
                 exercise=modified_exercise,
-                solution=f"Solution similaire à: {original_exercise['solution']}",
-                hints=original_exercise['hints'],
-                difficulty=original_exercise['difficulty'],
-                concept=original_exercise['concept']
+                solution=f"Solution similaire à: {original_exercise.solution}",
+                hints=original_exercise.hints,
+                difficulty=original_exercise.difficulty,
+                concept=original_exercise.concept
             )
 
         try:
@@ -845,10 +821,10 @@ class MathTutoringSystem:
                 avec la MÊME difficulté et portant sur le MÊME concept mathématique.
 
                 CONTEXTE:
-                - Exercice original: {original_exercise['exercise']}
-                - Concept: {original_exercise['concept']}
-                - Difficulté: {original_exercise['difficulty']}
-                - Solution originale: {original_exercise['solution']}
+                - Exercice original: {original_exercise.exercise}
+                - Concept: {original_exercise.concept}
+                - Difficulté: {original_exercise.difficulty}
+                - Solution originale: {original_exercise.solution}
 
                 EXIGENCES:
                 1. L'exercice doit tester les mêmes compétences mais avec des valeurs/nombres différents
@@ -870,14 +846,14 @@ class MathTutoringSystem:
             )
             
             result = crew.kickoff()
-            print("\nEXercice:", result['exercise'])
-            print("\nconcept:", result['concept'] )
-            print("\ndifficulty:", result['difficulty'])
-            print("\nhints:", "\n".join(result['hints']) )
+            # print("\nEXercice:", result['exercise'])
+            # print("\nconcept:", result['concept'] )
+            # print("\ndifficulty:", result['difficulty'])
+            # print("\nhints:", "\n".join(result['hints']) )
             return result
             
         except Exception as e:
-            console.print(f"[red]Erreur lors de la génération d'exercice similaire: {str(e)}[/red]")
+            st.error(f"Erreur lors de la génération d'exercice similaire: {str(e)}")
             # Fallback en cas d'erreur
             return self._generate_exercise()
         
@@ -914,10 +890,14 @@ class MathTutoringSystem:
             mlflow.log_dict(report.json(), "monitoring_report.json")
         
 if __name__ == "__main__":
+    # try:
+    #     system = MathTutoringSystem()
+    #     system.start_learning_session()
+    # except Exception as e:
+    # finally:
+    #     st.code("Merci d'avoir utilisé notre système!")
     try:
-        system = MathTutoringSystem()
-        system.start_learning_session()
+        mlflow.log_metric("test", 1)
     except Exception as e:
-        console.print(f"[red]❌ Erreur critique: {str(e)}[/red]")
-    finally:
-        console.print("[blue]Merci d'avoir utilisé notre système![/blue]")
+        chromadb.logger.error(f"Erreur MLflow: {str(e)}")
+    
